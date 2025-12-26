@@ -5,20 +5,24 @@ import time
 import logging
 from collections import defaultdict
 from json import JSONDecodeError
+from io import BytesIO
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
+from PIL import Image
 
 # -------------------------------------------------
 # Config
 # -------------------------------------------------
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2 MB
+RESIZE_WIDTH = 1280               # ancho máximo para resize
+RESIZE_HEIGHT = 960               # alto máximo para resize
 RATE_LIMIT = 5                    # requests
 RATE_WINDOW = 60                  # seconds
 REQUIRED_CLIENT_HEADER = "burako-pwa"
-LLM_TIMEOUT = 10                  # seconds
+LLM_TIMEOUT = 30                  # seconds
 MODEL = "gpt-4o-mini"
 
 # Load environment variables
@@ -38,13 +42,7 @@ client = OpenAI(api_key=api_key)
 # CORS configuration - allow multiple origins
 CORS(app, resources={r"/*": {
     "origins": [
-        "https://nicomali.github.io",
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8000",
-        "http://127.0.0.1:5173"
+        "*"
     ],
     "methods": ["GET", "POST", "OPTIONS"],
     "allow_headers": ["Content-Type", "X-App-Client", "X-Forwarded-For"]
@@ -66,8 +64,43 @@ def is_rate_limited(ip: str) -> bool:
     return False
 
 # -------------------------------------------------
-# Prompts
+# Helpers
 # -------------------------------------------------
+def resize_image(image_bytes: bytes) -> bytes:
+    """Redimensiona la imagen manteniendo relación de aspecto"""
+    try:
+        start_time = time.time()
+        original_size = len(image_bytes)
+        
+        # Abrir y detectar formato
+        image = Image.open(BytesIO(image_bytes))
+        image_format = image.format
+        original_width, original_height = image.size
+        
+        logging.info(f"[IMG] Original: size={original_size}B, format={image_format}, dimensions={original_width}x{original_height}, mode={image.mode}")
+        
+        # Redimensionar
+        image.thumbnail((RESIZE_WIDTH, RESIZE_HEIGHT), Image.Resampling.LANCZOS)
+        resized_width, resized_height = image.size
+        
+        # Guardar como JPEG
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=85)
+        output.seek(0)
+        resized_bytes = output.getvalue()
+        resized_size = len(resized_bytes)
+        
+        elapsed = time.time() - start_time
+        reduction = ((original_size - resized_size) / original_size) * 100
+        
+        logging.info(f"[IMG] Resized: size={resized_size}B, dimensions={resized_width}x{resized_height}, reduction={reduction:.1f}%, time={elapsed:.2f}s")
+        
+        return resized_bytes
+    except Exception as e:
+        logging.error(f"[IMG] Error al redimensionar: {type(e).__name__}: {e}")
+        return image_bytes
+
+
 BASE_PROMPT = """
 Sos un sistema de visión por computadora especializado en juegos de mesa.
 
@@ -150,6 +183,10 @@ def parse_and_validate(raw: str):
 @app.route("/analyze", methods=["POST", "OPTIONS"])
 def analyze():
     try:
+        # ---- Only process POST, skip OPTIONS (CORS preflight) ----
+        if request.method == "OPTIONS":
+            return "", 200
+        
         # ---- Anti-bot header ----
         if request.headers.get("X-App-Client") != REQUIRED_CLIENT_HEADER:
             return jsonify({
@@ -178,27 +215,48 @@ def analyze():
         file.seek(0, 2)
         size = file.tell()
         file.seek(0)
+        
+        logging.info(f"[REQUEST] filename={file.filename}, original_size={size}B ({size/1024/1024:.2f}MB), content_type={file.content_type}")
 
         if size > MAX_IMAGE_BYTES:
+            logging.warning(f"[REQUEST] Image rejected: size {size}B exceeds limit {MAX_IMAGE_BYTES}B")
             return jsonify({
                 "tiles": [],
                 "error": "image_too_large"
             }), 200
 
         image_bytes = file.read()
+        
+        # ---- Resize image ----
+        logging.info("[RESIZE] Starting image resize...")
+        image_bytes = resize_image(image_bytes)
+        
+        # Log base64 size
         image_b64 = base64.b64encode(image_bytes).decode()
+        b64_size = len(image_b64)
+        logging.info(f"[BASE64] size={b64_size}B ({b64_size/1024:.2f}KB)")
 
         # ---- LLM call (1st attempt) ----
+        logging.info(f"[LLM] Calling LLM (1st attempt) with {len(image_b64)} chars base64")
+        llm_start = time.time()
         raw = call_llm(image_b64, BASE_PROMPT)
+        llm_elapsed = time.time() - llm_start
+        logging.info(f"[LLM] Response received in {llm_elapsed:.2f}s, length={len(raw)}")
 
         try:
             tiles = parse_and_validate(raw)
-        except (JSONDecodeError, ValueError):
-            logging.warning("Primer intento inválido, reintentando")
+            logging.info(f"[PARSE] Successfully parsed {len(tiles)} tiles")
+        except (JSONDecodeError, ValueError) as e:
+            logging.warning(f"[PARSE] Primer intento inválido: {type(e).__name__}, reintentando...")
 
             # ---- Retry ----
+            logging.info("[LLM] Calling LLM (2nd attempt with retry prompt)")
+            llm_start = time.time()
             raw_retry = call_llm(image_b64, RETRY_PROMPT)
+            llm_elapsed = time.time() - llm_start
+            logging.info(f"[LLM] Retry response received in {llm_elapsed:.2f}s, length={len(raw_retry)}")
             tiles = parse_and_validate(raw_retry)
+            logging.info(f"[PARSE] Retry successful, parsed {len(tiles)} tiles")
 
         logging.info({
             "ip": ip,
@@ -209,7 +267,9 @@ def analyze():
         return jsonify({ "tiles": tiles }), 200
 
     except Exception as e:
-        logging.error(f"Error crítico: {e}")
+        import traceback
+        logging.error(f"[ERROR] Critical error: {type(e).__name__}: {e}")
+        logging.error(f"[TRACEBACK] {traceback.format_exc()}")
 
         return jsonify({
             "tiles": [],
