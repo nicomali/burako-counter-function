@@ -7,6 +7,7 @@ from collections import defaultdict
 from json import JSONDecodeError
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from openai import OpenAI
 
 # -------------------------------------------------
@@ -26,6 +27,8 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+CORS(app, resources={r"/*": {"origins": "https://nicomali.github.io/burako-counter-pwa/"}})
 
 # -------------------------------------------------
 # In-memory rate limit (best effort)
