@@ -9,6 +9,7 @@ from json import JSONDecodeError
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
+from dotenv import load_dotenv
 
 # -------------------------------------------------
 # Config
@@ -20,13 +21,19 @@ REQUIRED_CLIENT_HEADER = "burako-pwa"
 LLM_TIMEOUT = 10                  # seconds
 MODEL = "gpt-4o-mini"
 
+# Load environment variables
+load_dotenv()
+
+# Access the API key
+api_key = os.getenv("OPENAI_API_KEY")
+
 # -------------------------------------------------
 # App & Client
 # -------------------------------------------------
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+client = OpenAI(api_key=api_key)
 
 CORS(app, resources={r"/*": {"origins": "https://nicomali.github.io/burako-counter-pwa/"}})
 
@@ -195,3 +202,6 @@ def analyze():
             "tiles": [],
             "error": "vision_failed"
         }), 200
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
