@@ -35,7 +35,20 @@ logging.basicConfig(level=logging.INFO)
 
 client = OpenAI(api_key=api_key)
 
-CORS(app, resources={r"/*": {"origins": "https://nicomali.github.io/burako-counter-pwa/"}})
+# CORS configuration - allow multiple origins
+CORS(app, resources={r"/*": {
+    "origins": [
+        "https://nicomali.github.io",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:5173"
+    ],
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allow_headers": ["Content-Type", "X-App-Client", "X-Forwarded-For"]
+}})
 
 # -------------------------------------------------
 # In-memory rate limit (best effort)
@@ -134,7 +147,7 @@ def parse_and_validate(raw: str):
 # -------------------------------------------------
 # Endpoint
 # -------------------------------------------------
-@app.route("/analyze", methods=["POST"])
+@app.route("/analyze", methods=["POST", "OPTIONS"])
 def analyze():
     try:
         # ---- Anti-bot header ----
