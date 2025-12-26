@@ -1,4 +1,4 @@
+functions-framework
 flask
-flask_cors
 openai
-dotenv
+python-dotenv
