@@ -5,10 +5,9 @@ import time
 import logging
 from collections import defaultdict
 from json import JSONDecodeError
-from functools import wraps
 
-import functions_framework
-from flask import Request, jsonify
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -29,11 +28,14 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
 # -------------------------------------------------
-# Client
+# App & Client
 # -------------------------------------------------
+app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 client = OpenAI(api_key=api_key)
+
+CORS(app, resources={r"/*": {"origins": "https://nicomali.github.io/burako-counter-pwa/"}})
 
 # -------------------------------------------------
 # In-memory rate limit (best effort)
@@ -132,42 +134,8 @@ def parse_and_validate(raw: str):
 # -------------------------------------------------
 # Endpoint
 # -------------------------------------------------
-def add_cors_headers(func):
-    """Decorator to add CORS headers to response"""
-    @wraps(func)
-    def wrapper(request):
-        # Handle preflight requests
-        if request.method == 'OPTIONS':
-            headers = {
-                'Access-Control-Allow-Origin': 'https://nicomali.github.io/burako-counter-pwa/',
-                'Access-Control-Allow-Methods': 'POST, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, X-App-Client, X-Forwarded-For',
-                'Access-Control-Max-Age': '3600'
-            }
-            return '', 204, headers
-        
-        response = func(request)
-        
-        # Add CORS headers to response
-        if isinstance(response, tuple):
-            body, status_code = response[0], response[1]
-            headers = response[2] if len(response) > 2 else {}
-        else:
-            body = response
-            status_code = 200
-            headers = {}
-        
-        headers['Access-Control-Allow-Origin'] = 'https://nicomali.github.io/burako-counter-pwa/'
-        headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        headers['Access-Control-Allow-Headers'] = 'Content-Type, X-App-Client, X-Forwarded-For'
-        
-        return body, status_code, headers
-    
-    return wrapper
-
-@functions_framework.http
-@add_cors_headers
-def analyze(request: Request):
+@app.route("/analyze", methods=["POST"])
+def analyze():
     try:
         # ---- Anti-bot header ----
         if request.headers.get("X-App-Client") != REQUIRED_CLIENT_HEADER:
@@ -234,3 +202,7 @@ def analyze(request: Request):
             "tiles": [],
             "error": "vision_failed"
         }), 200
+
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
